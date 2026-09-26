@@ -1,0 +1,374 @@
+function buildPrompt(originalQuery) {
+  return `You are an expert SQL execution order analyzer, strictly grounded in MySQL's official documentation behavior (MySQL 8.0 Reference Manual, Section 15.2.13 "SELECT Statement").
+
+Given ANY SQL query — simple or complex (joins, subqueries, unions, CTEs, window functions, nested aggregates, multiple conditions, etc.) — explain the order in which the database engine ACTUALLY executes its operations based on MySQL logical processing behavior.
+
+Do not provide generic SQL explanations. Analyze the specific query structure and explain the execution flow that applies to THIS query.
+
+------------------------
+MYSQL-CONFIRMED FACTS (OFFICIAL DOCUMENTATION)
+------------------------
+- Written syntax order: SELECT ... FROM ... WHERE ... GROUP BY ... HAVING ... ORDER BY ... LIMIT.
+Standard logical evaluation order:
+FROM/JOIN -> WHERE -> GROUP BY -> HAVING -> AGGREGATE -> SELECT -> DISTINCT -> ORDER BY -> LIMIT.
+// This is new added 
+However, when SELECT contains DISTINCT:
+- Treat SELECT and DISTINCT as a combined projection operation.
+- SELECT creates the projected columns.
+- DISTINCT removes duplicate projected rows.
+- Keep SELECT before DISTINCT in execution steps.
+
+- For SUBQUERY, CTE, UNION, WINDOW FUNCTIONS, or DERIVED TABLES, determine the execution flow appropriate to that specific structure — never force the standard SELECT order when the query needs additional stages.
+- A column alias defined in SELECT (AS) CANNOT be used inside WHERE, since WHERE executes before the alias exists.
+- FROM with multiple tables triggers join processing; explain how rows are sourced, matched, and combined.
+- HAVING runs after grouping and aggregation, operating on grouped/aggregate results, never raw rows.
+- An aggregate function (AVG, SUM, COUNT, MIN, MAX) with NO GROUP BY clause still triggers a dedicated AGGREGATE step: MySQL treats the entire filtered result set as a single implicit group and returns exactly one summary row. Never describe this as "no rows" or "rows disappearing" — describe it as the whole result set collapsing into one row.
+
+------------------------
+JOIN-SPECIFIC FACTS (MUST HANDLE EVERY JOIN TYPE)
+------------------------
+- MySQL logically processes joins left-to-right as tables/joins appear in the FROM clause, building an intermediate result set incrementally: (T1 JOIN T2) JOIN T3, and so on for every additional join.
+- (INNER) JOIN: keeps only rows where the ON/USING condition matches on both sides; non-matching rows from either side are dropped entirely.
+- LEFT JOIN / LEFT OUTER JOIN: keeps every row from the left (preceding) table; when no match exists on the right table, right-side columns are returned as NULL.
+- RIGHT JOIN / RIGHT OUTER JOIN: keeps every row from the right table; when no match exists on the left side, left-side columns are returned as NULL.
+- FULL JOIN / FULL OUTER JOIN: MySQL has no native FULL OUTER JOIN keyword; when this appears (or is implied), explain it as the union of a LEFT JOIN and a RIGHT JOIN result (matching rows once, plus unmatched rows from both sides padded with NULLs) — describe this emulation explicitly in the explanation.
+- CROSS JOIN (or comma-separated FROM tables with no ON/WHERE join condition): produces the Cartesian product — every row of the first table paired with every row of the second table, with no matching condition applied.
+- Comma-style join (FROM a, b): treated identically to CROSS JOIN unless a matching predicate is later supplied in WHERE, in which case WHERE performs the equivalent of an INNER JOIN filter (explain this in the WHERE step, not the FROM/JOIN step).
+- SELF JOIN: same table joined to itself via table aliases; treat the two aliases as distinct row sources and explain matching between "different rows of the same table."
+- NATURAL JOIN: MySQL automatically matches and joins on all columns sharing the same name in both tables — explicitly name which columns are used for the implicit match.
+- STRAIGHT_JOIN: behaves like INNER JOIN but forces the optimizer to read the left table before the right table in that literal order; note this forced read order in the explanation.
+- Multiple JOINs in one query: create one dedicated JOIN step per join clause, in the exact left-to-right order they appear in FROM, each explaining its own join type, ON/USING condition, and how it extends the intermediate result built by the previous step.
+- USING(column) behaves like ON with equality on that column name, and also de-duplicates the shared column in the output; mention this when USING is present.
+
+------------------------
+EXECUTION STEP SELECTION RULE
+------------------------
+1. Analyze the complete SQL query structure.
+2. Identify all actual clauses/operations present.
+3. Include ONLY operations that participate in execution.
+4. NEVER create a step for a missing clause (no "no HAVING clause" placeholders).
+5. execution_order starts at 1, increases continuously, with no gaps for missing clauses.
+6. step_number must exactly match the step's position in the array.
+7. IMPORTANT: A SELECT step must ALWAYS be included, even for simple projections with no aggregates or expressions — every SQL query has a SELECT clause by definition. Never omit it.
+8. If the query contains N join operations (any mix of INNER, LEFT, RIGHT, FULL, CROSS, SELF, NATURAL, STRAIGHT_JOIN, or comma-joins), produce N separate JOIN steps in left-to-right FROM order — never collapse multiple joins into a single step, and never merge a join into the base FROM step.
+9. The "clause" field for a join step must always be literally "JOIN" (schema-compliant), but the "explanation" text must state the specific join type (e.g., "LEFT JOIN", "CROSS JOIN", "NATURAL JOIN", "SELF JOIN", "STRAIGHT_JOIN") and describe that type's exact row-matching/NULL-padding behavior.
+10. If the query contains an aggregate function (AVG, SUM, COUNT, MIN, MAX) and there is NO GROUP BY, still include a dedicated AGGREGATE step. Its explanation must state that the aggregate is computed once over the entire filtered result set (an implicit single group), producing exactly one output row — not zero rows, not one row per input row.
+
+Example — SELECT name, gross FROM salaries ORDER BY gross DESC;
+Correct steps: FROM -> SELECT -> ORDER BY (no WHERE/GROUP BY/etc. since absent)
+
+Example — SELECT e.name, d.dept_name FROM employees e LEFT JOIN departments d ON e.dept_id = d.id INNER JOIN locations l ON d.loc_id = l.id;
+Correct steps: FROM -> JOIN (LEFT JOIN departments, explain NULL-padding for unmatched employees) -> JOIN (INNER JOIN locations, explain it filters out any rows still missing a location match) -> SELECT
+
+Example — SELECT department, SUM(gross) FROM salaries GROUP BY department HAVING SUM(gross) > 20000;
+Correct steps: FROM -> GROUP BY -> AGGREGATE -> HAVING -> SELECT
+
+Example — SELECT AVG(gross) FROM salaries;
+Correct steps: FROM -> AGGREGATE (explain the average is computed once across every row in "salaries", collapsing the whole result set into one row) -> SELECT (returns that single computed value)
+
+Example — WITH high_salary AS (SELECT * FROM salaries WHERE gross > 5000) SELECT * FROM high_salary;
+Correct steps: CTE creation -> CTE filtering -> Outer query processing
+
+------------------------
+DEPTH RULES PER CLAUSE TYPE
+------------------------
+FROM: Which base/first table is read and how its rows are initially obtained (full scan, index, or derived table/subquery source).
+JOIN (one step per join clause, in left-to-right order): Identify the exact join type used. State the matched columns (ON/USING/NATURAL-implied/self-alias), describe precisely which rows survive, which are dropped, and — for outer joins — which side gets NULL-padded and why. For CROSS/comma-joins with no condition, describe the Cartesian product explicitly. For chained joins, state that this step operates on the intermediate result produced by the previous FROM/JOIN step, not on the raw base table.
+WHERE: How predicates are evaluated per row before grouping; exact condition; what survives vs. is removed.
+GROUP BY: How rows are grouped by matching column values; describe the groups formed conceptually.
+HAVING: Filtering after aggregation, operating on groups and their computed aggregate values.
+SELECT: Final expression evaluation, column projection, alias creation. When SELECT only contains aggregate expressions, state that it returns the single previously-computed aggregate row.
+DISTINCT: Duplicate row removal from the final result.
+ORDER BY: Sorting the result set by specified expression(s) and direction.
+LIMIT: Restricting the final returned rows to N.
+SUBQUERY: Inner query executes first; outer query consumes its result.
+CTE: Temporary named result set created first, then referenced by the main query.
+UNION: Each SELECT executes independently; results are combined (with dedup for UNION, without for UNION ALL).
+WINDOW FUNCTIONS: Computed after required rows are produced, generally before final ordering/limiting.
+AGGREGATE (AVG, SUM, COUNT, MIN, MAX): Own dedicated step.
+
+AGGREGATE STEP OUTPUT RULES (STRICT):
+- The AGGREGATE step must represent the actual rows produced after aggregation, not only describe the calculation.
+- For queries containing GROUP BY:
+  - input_rows represent the grouped records created by GROUP BY.
+  - output_rows must contain exactly one row per group.
+  - Each output row MUST include:
+      1. The GROUP BY column(s).
+      2. The calculated aggregate column(s) (AVG, SUM, COUNT, MIN, MAX).
+  - Never output only the group names without aggregate values.
+  - Example:
+    Input after GROUP BY:
+      dept = HR → salaries [50000, 60000]
+      dept = IT → salaries [70000, 80000]
+
+    Correct AGGREGATE output:
+      [
+        { "dept": "HR", "AVG(salary)": 55000 },
+        { "dept": "IT", "AVG(salary)": 75000 }
+      ]
+
+    Incorrect output:
+      [
+        { "dept": "HR" },
+        { "dept": "IT" }
+      ]
+
+- For aggregate queries WITHOUT GROUP BY:
+  - The entire filtered result set is treated as one implicit group.
+  - output_rows must contain exactly ONE row.
+  - Include the calculated aggregate value.
+  - Example:
+      [
+        { "AVG(salary)": 65000 }
+      ]
+  - Never describe this as zero rows or missing output.
+
+- If multiple aggregate functions exist, include every calculated aggregate column.
+  Example:
+    SELECT dept, AVG(salary), COUNT(*)
+    GROUP BY dept
+
+    Correct output:
+    [
+      {
+        "dept": "HR",
+        "AVG(salary)": 55000,
+        "COUNT(*)": 2
+      }
+    ]
+
+- The AGGREGATE step must transform grouped/input rows into final aggregated rows. Do not only explain the mathematical operation; show the resulting aggregated structure.
+
+------------------------
+SAMPLE DATA GENERATION (MANDATORY)
+------------------------
+
+Generate realistic sample data suitable for demonstrating the execution of this SQL query.
+
+GENERAL RULES
+- Return "sample_data" as a JSON OBJECT keyed by table name. Each value is an array of row objects for that table. Example shape: {"employees": [{...}], "departments": [{...}]}. Do NOT return a flat array — it must be grouped per table.
+- For multiple tables, generate 3 to 6 rows per table (or exactly 6 rows if a single table is involved).
+- Every table must have an "id" primary key column starting from 1.
+- Foreign keys must reference valid, existing "id" values in their parent tables.
+- For JOIN queries, explicitly include matching pairs as well as unmatching rows on either side to properly demonstrate join filtering or null-padding behavior.
+- For aggregate-only queries (no GROUP BY), generate rows with genuinely varied numeric values in the aggregated column so the computed AVG/SUM/MIN/MAX is meaningful and not trivially uniform.
+- Never use placeholder values such as "value1", "row1", or "test". Use realistic names, numbers, and dates.
+- Include every column referenced anywhere in the query (SELECT, WHERE, JOIN, GROUP BY, HAVING, ORDER BY, DISTINCT, aggregate functions, window functions, etc.), not just the selected columns.
+- Return only the raw source data. Do NOT calculate filters, groups, aggregates, rankings, or final results.
+
+NO-NULL RULE (STRICT — DO NOT VIOLATE)
+- NEVER set a table's own identity/foreign-key column (e.g. a "departments" row's own "department_id", a "customers" row's own "customer_id") to null. Every row must fully own its identity — a department that doesn't know its own department_id is invalid data.
+- NEVER set a descriptive column that is a row's main reason for existing (e.g. "department_name" on a departments row, "product_name" on a products row) to null. Every row must have a real, readable value there.
+- To demonstrate an "unmatched row" for a JOIN (a row on the many-side with no counterpart on the other side), do NOT use null for the foreign key. Instead, give it a concrete, realistic-looking foreign key VALUE that simply does not exist among the other table's ids/keys (e.g. if departments only has ids 5 and 10, give the unmatched employee department_id: 20, NOT department_id: null). This demonstrates "no match" just as validly as null would, but keeps every value in the dataset concrete and readable.
+- The only place NULL may ever legitimately appear is in a genuinely optional, non-identity, non-join, non-descriptive attribute (e.g. an optional "middle_name" or "notes" field) — and only if the query doesn't reference that column at all. If in doubt, do not use null anywhere.
+
+DATA QUALITY RULES
+- Values must match the correct SQL data types.
+- Data should be internally consistent.
+
+QUERY DEMONSTRATION RULES
+When possible:
+- At least one row should satisfy every WHERE condition, and at least one should fail it.
+- GROUP BY should produce at least two different groups.
+- HAVING should remove at least one group while keeping at least one.
+- ORDER BY should visibly change the row order.
+- LIMIT should return at least one row.
+- Aggregate functions should produce meaningful, non-trivial values.
+- DISTINCT should both remove duplicates and keep unique values.
+- JOIN conditions should produce both matching and non-matching rows whenever appropriate — using concrete non-matching foreign key values as described in the NO-NULL RULE above, never null.
+
+JOIN-TYPE-SPECIFIC SAMPLE DATA RULES
+- INNER JOIN: at least one matching pair, plus at least one unmatched row on each side (unmatched via a concrete non-existent foreign key value, never null).
+- LEFT JOIN: at least one left row with no right-side match (via a concrete non-existent foreign key value, never null on the left row's own FK column), plus at least one matching pair.
+- RIGHT JOIN: at least one right row with no left-side match, plus at least one matching pair.
+- FULL/FULL OUTER JOIN: a matching pair, an unmatched left row, and an unmatched right row.
+- CROSS JOIN / comma-style: keep both tables small (2-3 rows) so the full Cartesian product is easy to enumerate.
+- SELF JOIN: at least one row's key column references another row's id in the same table, plus one row with no self-referential match (use a concrete non-existent id, never null).
+- NATURAL JOIN: shared-name columns should have some overlapping and some non-overlapping values across the two tables (non-overlapping via concrete different values, never null).
+
+------------------------
+QUERY TO ANALYZE
+------------------------
+${originalQuery}
+
+------------------------
+GENERAL RULES
+------------------------
+1. Include a step ONLY for operations actually present in the query.
+2. NEVER create steps for missing clauses.
+3. "sql_fragment" must be the exact substring copied from the original query.
+4. Explanations must reflect real MySQL execution mechanics — not vague summaries. Keep each explanation to 2-4 sentences; do not pad.
+5. execution_order starts at 1 and increases continuously; step_number matches array position.
+6. Do NOT include "input_rows" or "output_rows" fields on any step — row data is computed separately. Only include the fields listed in the schema below.
+7. Respond ONLY with valid JSON. No markdown, no code fences, no comments, no text before or after.
+8. Follow this EXACT schema — nothing more, nothing less:
+
+{
+  "success": true,
+  "query": "string",
+
+  "sample_data": {
+    "table_name_1": [
+      { "id": 1, "column1": "value", "column2": "value" }
+    ],
+    "table_name_2": [
+      { "id": 1, "table_1_id": 1, "column2": "value" }
+    ]
+  },
+
+  "steps": [
+    {
+      "step_number": 1,
+      "clause": "FROM | JOIN | WHERE | GROUP BY | AGGREGATE | HAVING | SELECT | DISTINCT | ORDER BY | LIMIT | SUBQUERY | CTE | UNION | WINDOW FUNCTION",
+      "sql_fragment": "exact SQL part from original query",
+      "execution_order": 1,
+      "explanation": "Dynamic explanation of what happens in this step based on the actual query",
+      "input_columns": ["column_name"],
+      "output_columns": ["column_name"]
+    }
+  ],
+
+  "final_output_description": "Description of the final result returned by the query"
+}`;
+}
+
+// -------------------------
+// SPLIT PROMPTS (for speed)
+// -------------------------
+// Generating steps + sample_data in one giant call forces the model to
+// finish all step reasoning before it can even start on sample_data, and
+// one truncated response means regenerating EVERYTHING. Splitting into two
+// focused, much shorter prompts lets each finish faster on its own and
+// keeps a truncation/retry on one from wasting the other's work.
+
+function buildSampleDataPrompt(originalQuery, requiredColumnsByTable) {
+  let requirementsBlock = "";
+  if (requiredColumnsByTable && Object.keys(requiredColumnsByTable).length > 0) {
+    const lines = Object.entries(requiredColumnsByTable)
+      .map(([table, cols]) => `- Table "${table}" MUST include these exact columns: ${cols.join(", ")}`)
+      .join("\n");
+    requirementsBlock = `\nREQUIRED COLUMNS (do not omit any of these — the query cannot be demonstrated without them):\n${lines}\n`;
+  }
+
+  return `Generate realistic sample data for the MySQL query below, so its execution can be visualized step by step.
+
+STEP 0 — ANALYZE QUERY CONSTRAINTS FIRST (do this silently before writing any data):
+- Identify every table, join relationship, and column involved.
+- Scan the query for ANY filtering, grouping, or aggregate thresholds (e.g., WHERE clauses, LIMIT clauses, HAVING conditions like COUNT(*) > N, SUM(x) > Y, AVG(z) < W).
+- DYNAMIC CONSTRAINT OVERRIDE: You must generate enough rows to ensure that query conditions are meaningfully testable. Ensure that at least one row or group successfully passes every condition, and at least one fails it. If an aggregate or comparison threshold requires a high volume of rows for a specific group (e.g., a group needs 6+ rows to satisfy COUNT(*) > 5), override default row counts and generate enough data for that group to meet or exceed the threshold.
+
+JOIN DEMONSTRATION REQUIREMENT:
+The generated data MUST visibly demonstrate the join behavior.
+- LEFT JOIN: The left table MUST contain at least one row whose join key does not exist in the right table (using a concrete non-existing foreign key value, never NULL).
+- INNER JOIN: Include matching rows, plus unmatched rows that drop out after execution.
+- RIGHT / FULL JOIN: Include respective unmatched rows on both sides.
+
+RULES:
+- Return a JSON OBJECT keyed by table name: {"table_name": [ {row}, {row} ]}. NOT a flat array.
+- Default to 3–6 rows per table, UNLESS query thresholds (like HAVING or large WHERE ranges) require more rows to make the execution flow realistic and visible.
+- Every table needs an "id" column starting at 1. Foreign keys must reference valid ids in their parent table.
+- Include every column referenced anywhere in the query (SELECT, WHERE, JOIN ON, GROUP BY, HAVING, ORDER BY, aggregates), not just selected columns.
+- Do NOT invent extra columns that aren't referenced anywhere in the query.
+${requirementsBlock}- Use realistic values (real-sounding names, dates, numbers) — never placeholders like "value1" or "test".
+- If the query has an aggregate function, the aggregated numeric column must have varied, non-trivial values across rows.
+- STRICT NO-NULL RULE: Never use null for a table's identity/foreign-key or primary descriptive columns. To show an unmatched join row, use a concrete non-existent foreign-key value (e.g., foreign_key_id: 99).
+- Return ONLY the raw source rows — do not pre-compute filters, joins, groups, or aggregates.
+- Respond ONLY with valid JSON, no markdown, no commentary, no code fences.
+
+QUERY:
+${originalQuery}
+
+Return exactly this schema, nothing more:
+{
+  "sample_data": {
+    "table_name_1": [ { "id": 1, "column1": "value" } ],
+    "table_name_2": [ { "id": 1, "table_1_id": 1, "column2": "value" } ]
+  }
+}`;
+}
+
+function buildSampleDataPrompt(originalQuery, requiredColumnsByTable) {
+  let requirementsBlock = "";
+  if (requiredColumnsByTable && Object.keys(requiredColumnsByTable).length > 0) {
+    const lines = Object.entries(requiredColumnsByTable)
+      .map(([table, cols]) => `- Table "${table}" MUST include these exact columns: ${cols.join(", ")}`)
+      .join("\n");
+    requirementsBlock = `\nREQUIRED COLUMNS (do not omit any of these — the query cannot be demonstrated without them):\n${lines}\n`;
+  }
+
+  return `Generate realistic sample data for the MySQL query below, so its execution can be visualized step by step.
+
+STEP 0 — UNDERSTAND THE QUERY FIRST (do this silently before writing any data):
+- Identify every table involved and how it's used (base table vs. joined table).
+- For each JOIN, identify its exact type (INNER/LEFT/RIGHT/FULL/CROSS/etc.) and which column on each side is the join key.
+- Remember what that join type actually does: INNER JOIN drops any row that has no counterpart on the other side; LEFT JOIN keeps every left row regardless of a match; etc.
+- If the query has an aggregate function with no GROUP BY, remember the aggregate will collapse ALL rows (after WHERE/JOIN filtering) into a single summary row — so make sure the aggregated column has enough spread across rows that the resulting AVG/SUM/MIN/MAX is meaningful rather than trivially identical.
+- Only after you understand this should you invent rows — the rows you generate must be consistent with that behavior once the engine actually executes the join (e.g. if you're demonstrating an INNER JOIN, an unmatched employee will NOT appear in the final joined output, so don't design the demo around expecting it to appear).
+- This understanding step is internal reasoning only — do not include it in your output. Output ONLY the JSON schema below.
+
+JOIN DEMONSTRATION REQUIREMENT:
+The generated data MUST visibly demonstrate the join behavior.
+
+LEFT JOIN:
+- The left table MUST contain at least one row whose join key does not exist in the right table.
+- This unmatched row must use a concrete non-existing foreign key value, never NULL.
+- The right-side columns for this row should become NULL only after JOIN execution, not inside sample_data.
+
+INNER JOIN:
+- Include matching rows.
+- Include unmatched rows that disappear after JOIN execution.
+
+RIGHT JOIN:
+- Include unmatched rows on the right table.
+
+FULL JOIN:
+- Include unmatched rows on both sides.
+
+RULES:
+- Return a JSON OBJECT keyed by table name: {"table_name": [ {row}, {row} ]}. NOT a flat array.
+- 3-6 rows per table (or exactly 6 for a single-table query).
+- Every table needs an "id" column starting at 1. Foreign keys must reference valid ids in their parent table.
+- Include every column referenced anywhere in the query (SELECT, WHERE, JOIN ON, GROUP BY, HAVING, ORDER BY, aggregates), not just selected columns.
+- Do NOT invent extra columns that aren't referenced anywhere in the query and don't belong to that table's normal identity (e.g. don't add "department_name" to an "employees" row — that column belongs on "departments" only).
+${requirementsBlock}- Use realistic values (real-sounding names, dates, numbers) — never placeholders like "value1" or "test".
+- If the query has an aggregate function (AVG, SUM, COUNT, MIN, MAX) — with or without GROUP BY — the aggregated numeric column must have genuinely varied, non-trivial values across rows, so the computed result is meaningful rather than a flat constant.
+- STRICT NO-NULL RULE: never use null for (a) a table's own identity/foreign-key column, (b) a descriptive column that is the row's main reason for existing (e.g. a department's own name), or (c) a foreign key column used to demonstrate a join match/non-match. To show an "unmatched row" for a join, give it a concrete foreign-key value that simply doesn't exist in the other table (e.g. department_id: 20 when departments only has ids 5 and 10) — never null. If you are ever tempted to write null, write a concrete non-matching value instead.
+- For JOIN conditions, include BOTH at least one matching pair AND at least one unmatched row on the "many" side (via a concrete non-existent foreign key value, never null), so join filtering is actually visible once the engine executes it. This applies to INNER JOIN too — an unmatched row is expected to be DROPPED by an INNER JOIN; that's the point of including it, not a mistake.
+- If there's a WHERE clause, include at least one row that passes and one that fails it.
+- If there's a GROUP BY, ensure at least two distinct groups form.
+- If there's a HAVING clause, ensure it removes at least one group while keeping at least one.
+- Return ONLY the raw source rows — do not pre-compute filters, joins, groups, or aggregates yourself.
+- Respond ONLY with valid JSON, no markdown, no commentary, no code fences, and no explanation of your Step 0 reasoning.
+Generate EXTRA sample rows so the filtering process is visible.
+
+CRITICAL ORDERING RULE:
+- JOIN steps MUST ALWAYS precede the SELECT step.
+- NEVER put clause "SELECT" before clause "JOIN".
+- Standard order is ALWAYS: FROM -> JOIN -> WHERE -> GROUP BY -> HAVING -> SELECT -> ORDER BY -> LIMIT.
+
+Rules:
+1. Generate at least 6-8 rows per table.
+2. Ensure some rows satisfy the WHERE condition.
+3. Ensure some rows do NOT satisfy the WHERE condition.
+4. Never generate all rows that satisfy the condition.
+5. Never generate zero matching rows unless the query explicitly tests an empty result.
+6. Use realistic values.
+
+
+QUERY:
+${originalQuery}
+
+Return exactly this schema, nothing more:
+{
+  "sample_data": {
+    "table_name_1": [ { "id": 1, "column1": "value" } ],
+    "table_name_2": [ { "id": 1, "table_1_id": 1, "column2": "value" } ]
+  }
+}`;
+}
+
+module.exports = {
+  buildPrompt,
+  buildStepsPrompt,
+  buildSampleDataPrompt
+};

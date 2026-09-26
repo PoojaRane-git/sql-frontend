@@ -1,0 +1,823 @@
+import { useState, useEffect } from "react";
+import axios from "axios";
+import React from "react";
+import { motion, AnimatePresence, MotionConfig } from "framer-motion";
+import { ModuleRegistry, ClientSideRowModelModule, CellStyleModule } from "ag-grid-community";
+import { AgGridReact } from "ag-grid-react";
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-alpine.css";
+import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import ReactFlow from "reactflow";
+import "reactflow/dist/style.css";
+import { Tooltip as ReactTooltip } from "react-tooltip";
+import "react-tooltip/dist/react-tooltip.css";
+import "./App.css"; // 
+
+// Register required AG Grid modules
+ModuleRegistry.registerModules([ClientSideRowModelModule, CellStyleModule]);
+
+// -------------------------
+// WHERE / HAVING — animate rows being filtered out
+// -------------------------
+function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupColors, rowGroupColor, formatCell, runId, stepIndex }) {
+  const [visibleRows, setVisibleRows] = useState(prevRows.length > 0 ? prevRows : currRows);
+
+  useEffect(() => {
+    setVisibleRows(prevRows.length > 0 ? prevRows : currRows);
+    const timer = setTimeout(() => setVisibleRows(currRows), 600);
+    return () => clearTimeout(timer);
+  }, [prevRows, currRows]);
+
+  const survivingKeys = new Set(currRows.map((r) => r._rowKey));
+
+  return (
+    <table style={styles.table}>
+      <thead>
+        <tr>{stepColumns.map((col) => <th key={col} style={styles.th}>{col}</th>)}</tr>
+      </thead>
+      <tbody>
+        <AnimatePresence mode="popLayout">
+          {visibleRows.map((row, i) => {
+            const key = row._rowKey ? `${runId}-${row._rowKey}` : `${runId}-filt-${stepIndex}-${i}`;
+            const beingRemoved = !survivingKeys.has(row._rowKey);
+            return (
+              <motion.tr
+                key={key}
+                layout
+                initial={{ opacity: 0, y: 15 }}
+                animate={{
+                  opacity: 1,
+                  y: 0,
+                  backgroundColor: beingRemoved ? "#fecaca" : (rowGroupColor(row._rowKey, groups, groupColors) || "#ffffff")
+                }}
+                exit={{ opacity: 0, x: -60 }}
+                transition={{ duration: 0.4 }}
+              >
+                {stepColumns.map((col) => (
+                  <td key={col} style={styles.td}>{formatCell(row[col])}</td>
+                ))}
+              </motion.tr>
+            );
+          })}
+        </AnimatePresence>
+      </tbody>
+    </table>
+  );
+}
+
+// -------------------------
+// ORDER BY — animate rows moving into sorted table positions
+// -------------------------
+function ReorderAnimationTable({ prevRows, currRows, stepColumns, groups, groupColors, rowGroupColor, formatCell, runId, stepIndex }) {
+  const [orderedRows, setOrderedRows] = useState(prevRows.length > 0 ? prevRows : currRows);
+
+  useEffect(() => {
+    setOrderedRows(prevRows.length > 0 ? prevRows : currRows);
+    const timer = setTimeout(() => setOrderedRows(currRows), 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prevRows, currRows]);
+
+  return (
+    <table style={styles.table}>
+      <thead>
+        <tr>{stepColumns.map((col) => <th key={col} style={styles.th}>{col}</th>)}</tr>
+      </thead>
+      <tbody>
+        {orderedRows.map((row, i) => {
+          const key = row._rowKey ? `${runId}-${row._rowKey}` : `${runId}-ord-${stepIndex}-${i}`;
+          return (
+            <motion.tr
+              key={key}
+              layout
+              transition={{ duration: 0.6, ease: "easeInOut" }}
+              style={{ backgroundColor: rowGroupColor(row._rowKey, groups, groupColors) || "#ffffff" }}
+            >
+              {stepColumns.map((col) => (
+                <td key={col} style={styles.td}>{formatCell(row[col])}</td>
+              ))}
+            </motion.tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+export default function App() {
+  const [sql, setSql] = useState("");
+  const [steps, setSteps] = useState([]);
+  const [summary, setSummary] = useState("");
+  const [sampleData, setSampleData] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [runId, setRunId] = useState(0);
+
+  async function explainQuery() {
+    setLoading(true);
+    setError("");
+    setSteps([]);
+    setSampleData({});
+
+    try {
+      const res = await axios.post("http://localhost:5000/generate", { sql });
+      if (res.data.success) {
+        setSteps(res.data.steps || []);
+        setSummary(res.data.final_output_description || "");
+        setSampleData(res.data.sample_data || {});
+        setRunId((id) => id + 1);
+      } else {
+        setError(res.data.error || "Something went wrong");
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const tableNames = Object.keys(sampleData);
+  const hasSampleData = tableNames.length > 0;
+
+  function getGroupColors(groups) {
+    const colors = {};
+    if (groups) {
+      const palette = ["#dbeafe", "#dcfce7", "#fef9c3", "#fde2e2", "#ede9fe", "#ffe4e6"];
+      Object.keys(groups).forEach((g, i) => { colors[g] = palette[i % palette.length]; });
+    }
+    return colors;
+  }
+
+  function rowGroupColor(rowKey, groups, groupColors) {
+    if (!groups || !rowKey) return null;
+    const found = Object.entries(groups).find(([, keys]) => keys.includes(rowKey));
+    return found ? groupColors[found[0]] : null;
+  }
+
+  function formatCell(value) {
+    if (value === null || value === undefined) return "NULL";
+    return String(value);
+  }
+
+  function unionColumns(rows) {
+    const seen = new Set();
+    rows.forEach((row) => Object.keys(row).forEach((k) => seen.add(k)));
+    return Array.from(seen);
+  }
+
+  function findFragmentRange(sqlText, fragment) {
+    if (!sqlText || !fragment) return null;
+    const exactIdx = sqlText.indexOf(fragment);
+    if (exactIdx !== -1) return [exactIdx, exactIdx + fragment.length];
+
+    const map = [];
+    let normalized = "";
+    for (let i = 0; i < sqlText.length; i++) {
+      const ch = sqlText[i];
+      if (/\s/.test(ch)) continue;
+      normalized += ch.toLowerCase();
+      map.push(i);
+    }
+
+    const tryMatch = (frag) => {
+      let normFrag = "";
+      for (const ch of frag) {
+        if (/\s/.test(ch)) continue;
+        normFrag += ch.toLowerCase();
+      }
+      if (!normFrag) return null;
+      const idx = normalized.indexOf(normFrag);
+      if (idx === -1) return null;
+      return [map[idx], map[idx + normFrag.length - 1] + 1];
+    };
+
+    return tryMatch(fragment) || tryMatch(fragment.replace(/;\s*$/, "")) || tryMatch(fragment + ";") || null;
+  }
+
+  function renderHighlightedQuery(fragment) {
+    if (!sql || !fragment) return sql;
+    const range = findFragmentRange(sql, fragment);
+    if (!range) return sql;
+    const [start, end] = range;
+    return (
+      <>
+        {sql.slice(0, start)}
+        <mark style={styles.highlight}>{sql.slice(start, end)}</mark>
+        {sql.slice(end)}
+      </>
+    );
+  }
+
+  function renderAGGridTable(activeRows, stepColumns, columnAliases) {
+    const rowData = activeRows.map(r => {
+      const copy = {};
+      stepColumns.forEach(c => copy[c] = r[c]);
+      return copy;
+    });
+    const columnDefs = stepColumns.map(col => {
+      const original = columnAliases && columnAliases[col];
+      return {
+        field: col,
+        headerName: original ? `${col} *` : col,
+        headerTooltip: original ? `Originally: ${original}` : undefined,
+        cellStyle: { backgroundColor: '#f0fdf4', borderRight: '1px solid #d1fae5' }
+      };
+    });
+
+    return (
+      <div className="ag-theme-alpine" style={{ height: 250, width: '100%', marginTop: '10px' }}>
+        <AgGridReact
+          theme="legacy"
+          rowData={rowData}
+          columnDefs={columnDefs}
+          defaultColDef={{ flex: 1, minWidth: 100, resizable: true }}
+        />
+      </div>
+    );
+  }
+
+  function renderRechartsChart(activeRows, stepColumns) {
+    const numCol = stepColumns.find(c => typeof activeRows[0]?.[c] === 'number') || stepColumns[1] || stepColumns[0];
+    const catCol = stepColumns.find(c => c !== numCol) || stepColumns[0];
+
+    return (
+      <div style={{ width: '100%', height: 220, marginTop: '12px' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={activeRows}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={catCol} />
+            <YAxis />
+            <RechartsTooltip />
+            <Bar dataKey={numCol} fill="#4f46e5" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  function renderReactFlowDiagram(step) {
+    const clauseUpper = (step.clause || "").toUpperCase();
+    const isJoin = clauseUpper.includes("JOIN");
+    const isSubquery = clauseUpper.includes("SUBQUERY") || clauseUpper.includes("NESTED");
+    const joinType = (step.join_type || "").toUpperCase();
+
+    if (isJoin) {
+      const rightLabel = step.join_alias || step.join_table || "Right Table Schema";
+      let nodes, edges;
+
+      if (joinType.includes("LEFT")) {
+        nodes = [
+          { id: "l", data: { label: "Left Table (kept in full)" }, position: { x: 30, y: 60 } },
+          { id: "r", data: { label: rightLabel }, position: { x: 320, y: 60 } },
+          { id: "null", data: { label: "NULLs where no match" }, position: { x: 320, y: 160 }, style: { background: "#fee2e2", fontSize: 11 } }
+        ];
+        edges = [
+          { id: "e1", source: "l", target: "r", animated: true, label: "Matched rows" },
+          { id: "e2", source: "l", target: "null", animated: true, label: "Unmatched left rows", style: { stroke: "#f87171" } }
+        ];
+      } else if (joinType.includes("RIGHT")) {
+        nodes = [
+          { id: "l", data: { label: "Left Table" }, position: { x: 30, y: 60 } },
+          { id: "r", data: { label: `${rightLabel} (kept in full)` }, position: { x: 320, y: 60 } },
+          { id: "null", data: { label: "NULLs where no match" }, position: { x: 30, y: 160 }, style: { background: "#fee2e2", fontSize: 11 } }
+        ];
+        edges = [
+          { id: "e1", source: "r", target: "l", animated: true, label: "Matched rows" },
+          { id: "e2", source: "r", target: "null", animated: true, label: "Unmatched right rows", style: { stroke: "#f87171" } }
+        ];
+      } else if (joinType.includes("FULL")) {
+        nodes = [
+          { id: "l", data: { label: "Left Table (all rows)" }, position: { x: 30, y: 30 } },
+          { id: "r", data: { label: `${rightLabel} (all rows)` }, position: { x: 320, y: 30 } },
+          { id: "nulll", data: { label: "NULL right side" }, position: { x: 30, y: 150 }, style: { background: "#fee2e2", fontSize: 11 } },
+          { id: "nullr", data: { label: "NULL left side" }, position: { x: 320, y: 150 }, style: { background: "#fee2e2", fontSize: 11 } }
+        ];
+        edges = [
+          { id: "e1", source: "l", target: "r", animated: true, label: "Matched rows" },
+          { id: "e2", source: "l", target: "nulll", animated: true, style: { stroke: "#f87171" } },
+          { id: "e3", source: "r", target: "nullr", animated: true, style: { stroke: "#f87171" } }
+        ];
+      } else {
+        nodes = [
+          { id: "l", data: { label: "Left Table Schema" }, position: { x: 50, y: 60 } },
+          { id: "r", data: { label: rightLabel }, position: { x: 320, y: 60 } }
+        ];
+        edges = [
+          { id: "e1", source: "l", target: "r", animated: true, label: "Matched rows only" }
+        ];
+      }
+
+      return (
+        <div style={{ height: 200, width: "100%", border: "1px solid #e5e5e5", borderRadius: "8px", marginTop: "10px" }}>
+          <ReactFlow nodes={nodes} edges={edges} fitView />
+        </div>
+      );
+    }
+
+    const nodes = isSubquery ? [
+      { id: '1', data: { label: 'Parent Table Query' }, position: { x: 175, y: 20 } },
+      { id: '2', data: { label: 'Nested Subquery Table' }, position: { x: 175, y: 120 } }
+    ] : [
+      { id: '1', data: { label: 'Table Schema A' }, position: { x: 50, y: 50 } },
+      { id: '2', data: { label: 'Table Schema B' }, position: { x: 300, y: 50 } }
+    ];
+
+    const edges = !isSubquery ? [
+      { id: 'e1-2', source: '1', target: '2', animated: true, label: 'Table Relations' }
+    ] : [
+      { id: 'e2-1', source: '2', target: '1', animated: true, label: 'Returns Table Dataset' }
+    ];
+
+    return (
+      <div style={{ height: 180, width: '100%', border: '1px solid #e5e5e5', borderRadius: '8px', marginTop: '10px' }}>
+        <ReactFlow nodes={nodes} edges={edges} fitView />
+      </div>
+    );
+  }
+
+  return (
+    <MotionConfig reducedMotion="never">
+    <div style={styles.container}>
+      <h1>SQL Query Visualizer Pro</h1>
+
+      <textarea
+        rows={6}
+        value={sql}
+        onChange={(e) => setSql(e.target.value)}
+        placeholder="Write your SQL query here ..."
+        style={styles.textarea}
+      />
+
+      <br />
+      <button onClick={explainQuery} disabled={loading} style={styles.button}>
+        {loading ? "Analyzing..." : "Explain Query"}
+      </button>
+
+      {error && <p style={{ color: "red" }}>{error}</p>}
+
+      {hasSampleData && (
+        <div style={{ marginTop: "24px" }}>
+          <h2 style={{ fontSize: "16px" }}>Database Table Schemas & Sample Data</h2>
+          {tableNames.map((tableName) => {
+            const rows = sampleData[tableName];
+            const cols = rows.length > 0 ? unionColumns(rows) : [];
+            return (
+              <div key={tableName} style={styles.tableWrapper}>
+                <div style={styles.tableLabel}>Table: {tableName}</div>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>{cols.map((c) => <th key={c} style={styles.th}>{c}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, i) => (
+                      <tr key={i}>
+                        {cols.map((c) => (
+                          <td key={c} style={styles.td}>
+                            {formatCell(row[c])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {steps.length > 0 && (
+        <AnimatePresence>
+          <motion.div
+            key={`run-${runId}`}
+            initial="hidden"
+            animate="visible"
+            variants={{
+              hidden: {},
+              visible: { transition: { staggerChildren: 0.15 } }
+            }}
+          >
+          {steps.map((step, stepIndex) => {
+            const activeRows = step.output_rows || [];
+            const stepColumns = activeRows.length > 0
+              ? unionColumns(activeRows).filter((col) => col !== "_rowKey")
+              : [];
+
+            const groups = step.groups || null;
+            const groupColors = getGroupColors(groups);
+            const clauseUpper = (step.clause || "").toUpperCase().replace(/\s+/g, "_");
+            const prevRows = stepIndex > 0 ? (steps[stepIndex - 1].output_rows || []) : [];
+            const columnAliases = step.column_aliases || null;
+
+            return (
+              <motion.div
+                key={`${runId}-${step.step_number || step.execution_order}`}
+                variants={{
+                  hidden: { opacity: 0, y: 40 },
+                  visible: { opacity: 1, y: 0 }
+                }}
+                transition={{ duration: 0.6, ease: "easeOut" }}
+                style={styles.block}
+              >
+                <div style={styles.queryBox}>
+                  <pre style={styles.pre}>{renderHighlightedQuery(step.sql_fragment)}</pre>
+                </div>
+
+                <div style={styles.stepCard}>
+                  <h3>Step {step.execution_order} — {step.clause}</h3>
+                  <code style={styles.codeBlock}>{step.sql_fragment}</code>
+                  <p>{step.explanation}</p>
+                </div>
+
+                <div style={styles.tableWrapper}>
+                  <div style={styles.tableLabel}>Table Output Rows — after Step {step.execution_order}</div>
+
+                  {clauseUpper.includes("JOIN") || clauseUpper.includes("SUBQUERY") || clauseUpper.includes("MULTIPLE") ? (
+                    renderReactFlowDiagram(step)
+                  ) : clauseUpper.includes("GROUP_BY") || clauseUpper === "AGGREGATE" ? (
+                    renderRechartsChart(activeRows, stepColumns)
+                  ) : clauseUpper.includes("SELECT") || clauseUpper.includes("DISTINCT") ? (
+                    renderAGGridTable(activeRows, stepColumns, columnAliases)
+                  ) : clauseUpper === "WHERE" || clauseUpper === "HAVING" ? (
+                    <FilterAnimationTable
+                      prevRows={prevRows}
+                      currRows={activeRows}
+                      stepColumns={stepColumns.length > 0 ? stepColumns : (prevRows.length > 0 ? unionColumns(prevRows).filter((c) => c !== "_rowKey") : [])}
+                      groups={groups}
+                      groupColors={groupColors}
+                      rowGroupColor={rowGroupColor}
+                      formatCell={formatCell}
+                      runId={runId}
+                      stepIndex={stepIndex}
+                    />
+                  ) : clauseUpper === "ORDER_BY" ? (
+                    <ReorderAnimationTable
+                      prevRows={prevRows.length > 0 ? prevRows : activeRows}
+                      currRows={activeRows}
+                      stepColumns={stepColumns}
+                      groups={groups}
+                      groupColors={groupColors}
+                      rowGroupColor={rowGroupColor}
+                      formatCell={formatCell}
+                      runId={runId}
+                      stepIndex={stepIndex}
+                    />
+                  ) : (
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          {stepColumns.map((col) => {
+                            const original = columnAliases && columnAliases[col];
+                            return (
+                              <th key={col} style={styles.th}>
+                                {col}{" "}
+                                {original && (
+                                  <span
+                                    style={styles.badge}
+                                    data-tooltip-id="alias-tooltip"
+                                    data-tooltip-content={`Originally: ${original}`}
+                                  >
+                                    Alias
+                                  </span>
+                                )}
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <AnimatePresence mode="popLayout">
+                          {activeRows.map((row, i) => {
+                            const uniqueRowKey = row._rowKey
+                              ? `${runId}-${row._rowKey}`
+                              : `${runId}-row-${step.execution_order}-${i}`;
+                            return (
+                              <motion.tr
+                                key={uniqueRowKey}
+                                layout
+                                initial={{ opacity: 0, y: 15 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, x: -50 }}
+                                transition={{ duration: 0.3 }}
+                                style={{ backgroundColor: rowGroupColor(row._rowKey, groups, groupColors) || "#fff" }}
+                              >
+                                {stepColumns.map((col) => (
+                                  <td key={col} style={styles.td}>{formatCell(row[col])}</td>
+                                ))}
+                              </motion.tr>
+                            );
+                          })}
+                        </AnimatePresence>
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeRows.length === 0 && (
+                    <p style={{ textAlign: "center", color: "#999", padding: "12px" }}>
+                      No table rows remain at this step.
+                    </p>
+                  )}
+
+                  {groups && (
+                    <div style={{ marginTop: "10px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                      {Object.entries(groupColors).map(([g, color]) => (
+                        <div key={g} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <div style={{ width: "14px", height: "14px", background: color, borderRadius: "3px" }} />
+                          <span style={{ fontSize: "13px" }}>{g}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+          </motion.div>
+        </AnimatePresence>
+      )}
+
+      {summary && <div style={styles.summary}>{summary}</div>}
+      <ReactTooltip id="alias-tooltip" />
+    </div>
+    </MotionConfig>
+  );
+}
+
+const styles = {
+  container: { width: "900px", margin: "40px auto", fontFamily: "sans-serif" },
+  textarea: { width: "100%", fontFamily: "monospace", fontSize: "14px", padding: "8px" },
+  button: { marginTop: "10px", padding: "8px 16px", background: "#4f46e5", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" },
+  queryBox: { marginTop: "20px", background: "#1e1e1e", padding: "16px", borderRadius: "8px" },
+  pre: { color: "#d4d4d4", fontFamily: "monospace", fontSize: "14px", whiteSpace: "pre-wrap", margin: 0 },
+  highlight: { backgroundColor: "#facc15", color: "#000", padding: "2px 4px", borderRadius: "4px" },
+  block: { marginTop: "24px", paddingBottom: "20px", borderBottom: "1px dashed #ddd" },
+  stepCard: { padding: "16px", border: "1px solid #e5e5e5", borderRadius: "8px", background: "#fafafa" },
+  codeBlock: { display: "block", background: "#f4f4f4", padding: "8px", margin: "8px 0", borderRadius: "4px" },
+  tableWrapper: { marginTop: "12px", padding: "16px", border: "1px solid #ddd", borderRadius: "8px", background: "#fff" },
+  tableLabel: { fontWeight: "bold", marginBottom: "8px", color: "#333" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { borderBottom: "2px solid #333", textAlign: "left", padding: "8px", cursor: "help" },
+  td: { padding: "8px", borderBottom: "1px solid #eee" },
+  badge: { fontSize: "10px", background: "#e0e7ff", color: "#3730a3", padding: "2px 4px", borderRadius: "4px", marginLeft: "4px" },
+  summary: { marginTop: "24px", padding: "12px", background: "#ecfdf5", borderRadius: "6px" }
+};
+
+import { useState } from "react";
+import axios from "axios";
+import { motion, AnimatePresence, MotionConfig } from "framer-motion";
+import { ModuleRegistry, ClientSideRowModelModule, CellStyleModule } from "ag-grid-community";
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-alpine.css";
+import "reactflow/dist/style.css";
+import "react-tooltip/dist/react-tooltip.css";
+import "./App.css";
+
+// Styles & Utils
+import { styles } from "./styles/styles";
+import { formatCell, findFragmentRange } from "./utils/format";
+import { unionColumns } from "./utils/columns";
+import { getGroupColors, rowGroupColor } from "./utils/colors";
+
+// Components
+import FilterAnimationTable from "./components/animations/FilterAnimationTable";
+import ReorderAnimationTable from "./components/animations/ReorderAnimationTable";
+import UnionAnimation from "./components/animations/UnionAnimation";
+import GroupByChart from "./components/charts/GroupByChart";
+import AggregateChart from "./components/charts/AggregateChart";
+import SelectGrid from "./components/grids/SelectGrid";
+import JoinFlow from "./components/diagrams/JoinFlow";
+import SubqueryFlow from "./components/diagrams/SubqueryFlow";
+import ERDiagram from "./components/diagrams/ERDiagram";
+import AliasTooltip from "./components/tooltips/AliasTooltip";
+import OutputTable from "./components/tables/OutputTable";
+
+ModuleRegistry.registerModules([ClientSideRowModelModule, CellStyleModule]);
+
+export default function App() {
+  const [sql, setSql] = useState("");
+  const [steps, setSteps] = useState([]);
+  const [summary, setSummary] = useState("");
+  const [sampleData, setSampleData] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [runId, setRunId] = useState(0);
+
+  async function explainQuery() {
+    setLoading(true);
+    setError("");
+    setSteps([]);
+    setSampleData({});
+
+    try {
+      const res = await axios.post("http://localhost:5000/generate", { sql });
+      if (res.data.success) {
+        setSteps(res.data.steps || []);
+        setSummary(res.data.final_output_description || "");
+        setSampleData(res.data.sample_data || {});
+        setRunId((id) => id + 1);
+      } else {
+        setError(res.data.error || "Something went wrong");
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const tableNames = Object.keys(sampleData);
+  const hasSampleData = tableNames.length > 0;
+
+  function renderHighlightedQuery(fragment) {
+    if (!sql || !fragment) return sql;
+    const range = findFragmentRange(sql, fragment);
+    if (!range) return sql;
+    const [start, end] = range;
+    return (
+      <>
+        {sql.slice(0, start)}
+        <mark style={styles.highlight}>{sql.slice(start, end)}</mark>
+        {sql.slice(end)}
+      </>
+    );
+  }
+
+  return (
+    <MotionConfig reducedMotion="never">
+      <div style={styles.container}>
+        <h1>SQL Query Visualizer Pro</h1>
+
+        <textarea
+          rows={6}
+          value={sql}
+          onChange={(e) => setSql(e.target.value)}
+          placeholder="Write your SQL query here ..."
+          style={styles.textarea}
+        />
+
+        <br />
+        <button onClick={explainQuery} disabled={loading} style={styles.button}>
+          {loading ? "Analyzing..." : "Explain Query"}
+        </button>
+
+        {error && <p style={{ color: "red" }}>{error}</p>}
+
+        {hasSampleData && (
+          <div style={{ marginTop: "24px" }}>
+            <h2 style={{ fontSize: "16px" }}>Database Table Schemas & Sample Data</h2>
+            {tableNames.map((tableName) => {
+              const rows = sampleData[tableName];
+              const cols = rows.length > 0 ? unionColumns(rows) : [];
+              return (
+                <div key={tableName} style={styles.tableWrapper}>
+                  <div style={styles.tableLabel}>Table: {tableName}</div>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>{cols.map((c) => <th key={c} style={styles.th}>{c}</th>)}</tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row, i) => (
+                        <tr key={i}>
+                          {cols.map((c) => (
+                            <td key={c} style={styles.td}>
+                              {formatCell(row[c])}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {steps.length > 0 && (
+          <AnimatePresence>
+            <motion.div
+              key={`run-${runId}`}
+              initial="hidden"
+              animate="visible"
+              variants={{
+                hidden: {},
+                visible: { transition: { staggerChildren: 0.15 } }
+              }}
+            >
+              {steps.map((step, stepIndex) => {
+                const activeRows = step.output_rows || [];
+                const stepColumns = activeRows.length > 0
+                  ? unionColumns(activeRows).filter((col) => col !== "_rowKey")
+                  : [];
+
+                const groups = step.groups || null;
+                const groupColors = getGroupColors(groups);
+                const clauseUpper = (step.clause || "").toUpperCase().replace(/\s+/g, "_");
+                const prevRows = stepIndex > 0 ? (steps[stepIndex - 1].output_rows || []) : [];
+                const columnAliases = step.column_aliases || null;
+
+                return (
+                  <motion.div
+                    key={`${runId}-${step.step_number || step.execution_order}`}
+                    variants={{
+                      hidden: { opacity: 0, y: 40 },
+                      visible: { opacity: 1, y: 0 }
+                    }}
+                    transition={{ duration: 0.6, ease: "easeOut" }}
+                    style={styles.block}
+                  >
+                    <div style={styles.queryBox}>
+                      <pre style={styles.pre}>{renderHighlightedQuery(step.sql_fragment)}</pre>
+                    </div>
+
+                    <div style={styles.stepCard}>
+                      <h3>Step {step.execution_order} — {step.clause}</h3>
+                      <code style={styles.codeBlock}>{step.sql_fragment}</code>
+                      <p>{step.explanation}</p>
+                    </div>
+
+                    <div style={styles.tableWrapper}>
+                      <div style={styles.tableLabel}>Table Output Rows — after Step {step.execution_order}</div>
+
+                      {clauseUpper.includes("JOIN") ? (
+                        <JoinFlow step={step} />
+                      ) : clauseUpper.includes("SUBQUERY") || clauseUpper.includes("NESTED") ? (
+                        <SubqueryFlow />
+                      ) : clauseUpper.includes("MULTIPLE") ? (
+                        <ERDiagram />
+                      ) : clauseUpper.includes("GROUP_BY") ? (
+                        <GroupByChart activeRows={activeRows} stepColumns={stepColumns} />
+                      ) : clauseUpper === "AGGREGATE" ? (
+                        <AggregateChart activeRows={activeRows} stepColumns={stepColumns} />
+                      ) : clauseUpper.includes("SELECT") || clauseUpper.includes("DISTINCT") ? (
+                        <SelectGrid activeRows={activeRows} stepColumns={stepColumns} columnAliases={columnAliases} />
+                      ) : clauseUpper === "WHERE" || clauseUpper === "HAVING" ? (
+                        <FilterAnimationTable
+                          prevRows={prevRows}
+                          currRows={activeRows}
+                          stepColumns={stepColumns.length > 0 ? stepColumns : (prevRows.length > 0 ? unionColumns(prevRows).filter((c) => c !== "_rowKey") : [])}
+                          groups={groups}
+                          groupColors={groupColors}
+                          rowGroupColor={rowGroupColor}
+                          formatCell={formatCell}
+                          runId={runId}
+                          stepIndex={stepIndex}
+                        />
+                      ) : clauseUpper === "ORDER_BY" ? (
+                        <ReorderAnimationTable
+                          prevRows={prevRows.length > 0 ? prevRows : activeRows}
+                          currRows={activeRows}
+                          stepColumns={stepColumns}
+                          groups={groups}
+                          groupColors={groupColors}
+                          rowGroupColor={rowGroupColor}
+                          formatCell={formatCell}
+                          runId={runId}
+                          stepIndex={stepIndex}
+                        />
+                      ) : clauseUpper === "UNION" ? (
+                        <UnionAnimation activeRows={activeRows} stepColumns={stepColumns} formatCell={formatCell} />
+                      ) : (
+                        <OutputTable
+                          activeRows={activeRows}
+                          stepColumns={stepColumns}
+                          columnAliases={columnAliases}
+                          groups={groups}
+                          groupColors={groupColors}
+                          rowGroupColor={rowGroupColor}
+                          formatCell={formatCell}
+                          runId={runId}
+                          stepNumber={step.execution_order}
+                        />
+                      )}
+
+                      {activeRows.length === 0 && (
+                        <p style={{ textAlign: "center", color: "#999", padding: "12px" }}>
+                          No table rows remain at this step.
+                        </p>
+                      )}
+
+                      {groups && (
+                        <div style={{ marginTop: "10px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                          {Object.entries(groupColors).map(([g, color]) => (
+                            <div key={g} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <div style={{ width: "14px", height: "14px", background: color, borderRadius: "3px" }} />
+                              <span style={{ fontSize: "13px" }}>{g}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+          </AnimatePresence>
+        )}
+
+        {summary && <div style={styles.summary}>{summary}</div>}
+        <AliasTooltip />
+      </div>
+    </MotionConfig>
+  );
+}
