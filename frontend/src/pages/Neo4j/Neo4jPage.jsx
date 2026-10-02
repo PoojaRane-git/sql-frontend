@@ -34,9 +34,8 @@ function Neo4jPage() {
     setResponse(null);
 
     try {
-      // FIX: Hits the centralized axios instance explicitly using a clean POST route endpoint
-      const res = await api.post("/neo4j/convert", { query: trimmedQuery });
-      const data = res.data;
+    const data = await api.neo4j.convert(trimmedQuery);
+
 
       console.log("Neo4j response:", data);
       setResponse(data);

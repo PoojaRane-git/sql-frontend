@@ -249,6 +249,8 @@ const MongoDB = () => {
       return;
     }
 
+    console.log("MongoDB Query:", trimmed);
+
     setLoading(true);
     setError("");
     setConverted(false);
@@ -256,22 +258,16 @@ const MongoDB = () => {
     setSql("");
     setCurrentStep(0);
 
+   
     try {
       const data = await api.mongodb.convert(trimmed);
-
-      if (!data) {
-        throw new Error("Empty response received from server.");
-      }
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      if (!data) throw new Error("Empty response received from server.");
+      if (data.error) throw new Error(data.error);
 
       setResult(data);
       setSql(data.sqlQuery || "");
       setConverted(true);
-      setCurrentStep(0);
-    } catch (err) {
+    }  catch (err) {
       console.error("MongoDB conversion error:", err);
       setError(err?.message || "MongoDB conversion failed.");
     } finally {

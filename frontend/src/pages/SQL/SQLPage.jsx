@@ -105,8 +105,8 @@ export default function SQLPage() {
 
     try {
       // Calls axios instance configured with dynamic environment base URLs
-      const response = await api.post("/sql/analyze", { sql: sql.trim() });
-      const data = response.data;
+ const data = await api.sql.analyze(sql.trim());
+
 
       console.log("SQL response:", data);
 
