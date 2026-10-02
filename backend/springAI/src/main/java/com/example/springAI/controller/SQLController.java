@@ -52,7 +52,7 @@ public class SQLController {
             JsonNode validatedSteps = JsonUtils.parse(validatedRaw);
 
             ObjectNode merged = JsonUtils.mergeStepsAndSampleData(validatedSteps, sampleDataJson);
-  
+
             return new ResponseNode(true, merged, null);
 
         } catch (Exception e) {
