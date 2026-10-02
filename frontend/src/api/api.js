@@ -4,6 +4,8 @@ const BASE_URL =
   (typeof process !== 'undefined' && process.env?.REACT_APP_API_URL) || 
   "https://sql-neo4j-backend.onrender.com"; 
 
+console.log("Using API Base URL:", BASE_URL);
+
 const apiClient = axios.create({
   baseURL: `${BASE_URL}/api`,
   headers: {
