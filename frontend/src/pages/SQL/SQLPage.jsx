@@ -13,9 +13,8 @@ import api from "../services/api";
 // Register AG Grid Modules
 ModuleRegistry.registerModules([ClientSideRowModelModule, CellStyleModule]);
 
-// -------------------------
+
 // ICONS COMPONENT
-// -------------------------
 const Icons = {
   Join: () => <span style={styles.stepIcon}>🔗</span>,
   Filter: () => <span style={styles.stepIcon}>🔍</span>,
@@ -35,9 +34,9 @@ function StepIcon({ clause }) {
   return <Icons.Default />;
 }
 
-// -------------------------
+
 // ANIMATED FILTER TABLE
-// -------------------------
+
 function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupColors, rowGroupColor, formatCell, runId }) {
   const [visibleRows, setVisibleRows] = useState(prevRows.length > 0 ? prevRows : currRows);
 
@@ -85,9 +84,9 @@ function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupCo
   );
 }
 
-// -------------------------
+
 // MAIN APP
-// -------------------------
+
 export default function SQLPage() {
   const [sql, setSql] = useState("");
   const [steps, setSteps] = useState([]);
@@ -427,9 +426,9 @@ export default function SQLPage() {
   );
 }
 
-// -------------------------
+
 // STYLES OBJECT
-// -------------------------
+
 const styles = {
   pageBackground: { minHeight: "100vh", backgroundColor: "#f8fafc", fontFamily: "'Inter', sans-serif", color: "#1e293b" },
   navbar: { height: "64px", backgroundColor: "#fff", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", padding: "0 40px", position: "sticky", top: 0, zIndex: 50 },
