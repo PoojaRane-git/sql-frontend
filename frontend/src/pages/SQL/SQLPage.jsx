@@ -85,8 +85,6 @@ function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupCo
 }
 
 
-// MAIN APP
-
 export default function SQLPage() {
   const [sql, setSql] = useState("");
   const [steps, setSteps] = useState([]);
@@ -98,43 +96,46 @@ export default function SQLPage() {
   const [activeStepTab, setActiveStepTab] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
 
+  // FIX: Explicitly hits the axios instance using an explicit POST body mapping configuration
   const explainQuery = async () => {
-  if (!sql.trim()) return;
+    if (!sql.trim()) return;
 
-  setLoading(true);
-  setError("");
+    setLoading(true);
+    setError("");
 
-  try {
-    const data = await api.sql.analyze(sql.trim());
+    try {
+      // Calls axios instance configured with dynamic environment base URLs
+      const response = await api.post("/sql/analyze", { sql: sql.trim() });
+      const data = response.data;
 
-    console.log("SQL response:", data);
+      console.log("SQL response:", data);
 
-    if (data.success && data.data) {
-      const result = data.data;
+      if (data.success && data.data) {
+        const result = data.data;
 
-      setSteps(result.steps || []);
-      setSummary(result.final_output_description || "");
-      setSampleData(result.sample_data || {});
-      setRunId((id) => id + 1);
-      setActiveStepTab(0);
-    } else {
+        setSteps(result.steps || []);
+        setSummary(result.final_output_description || "");
+        setSampleData(result.sample_data || {});
+        setRunId((id) => id + 1);
+        setActiveStepTab(0);
+      } else {
+        setError(
+          data.error ||
+            data.data?.explanation ||
+            "Execution Error"
+        );
+      }
+    } catch (err) {
+      console.error(err);
       setError(
-        data.error ||
-          data.data?.explanation ||
-          "Execution Error"
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to connect to the SQL backend."
       );
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    console.error(err);
-
-    setError(
-      err?.message ||
-        "Unable to connect to the SQL backend."
-    );
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   function clearOutput() {
     setSteps([]);
