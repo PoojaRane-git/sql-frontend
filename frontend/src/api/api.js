@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8082";
+const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8082" || "https://sql-neo4j-backend.onrender.com/";
 
 const apiClient = axios.create({
   baseURL: `${BASE_URL}/api`,
