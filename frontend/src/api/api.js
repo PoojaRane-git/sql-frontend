@@ -2,7 +2,7 @@ import axios from "axios";
 
 const BASE_URL = 
   (typeof process !== 'undefined' && process.env?.REACT_APP_API_URL) || 
-  "https://onrender.com"; 
+  "https://sql-neo4j-backend.onrender.com"; 
 
 const apiClient = axios.create({
   baseURL: `${BASE_URL}/api`,
