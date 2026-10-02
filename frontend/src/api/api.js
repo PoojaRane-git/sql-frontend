@@ -1,6 +1,5 @@
 import axios from "axios";
 
-// Note: Automatically checks process.env (CRA) or falls back to your live Render endpoint
 const BASE_URL = 
   (typeof process !== 'undefined' && process.env?.REACT_APP_API_URL) || 
   "https://onrender.com"; 
@@ -15,9 +14,10 @@ const apiClient = axios.create({
 const api = {
   // SQL Router
   sql: {
-    analyze: async (sql) => {
-      const response = await apiClient.post("/sql/analyze", { sql });
-      return response; 
+    analyze: async (sqlQuery) => {
+      //  FIX: Map the parameter key to "query" to match your Java Record structure
+      const response = await apiClient.post("/sql/analyze", { query: sqlQuery });
+      return response.data; // Directly extracts target data data models safely
     },
   },
   // Neo4j Router
@@ -31,7 +31,7 @@ const api = {
   mongodb: {
     convert: async (query) => {
       const response = await apiClient.post("/mongodb/convert", { query });
-      return response.data; // Directly extracts target data metrics safely
+      return response.data; 
     },
   },
 };
