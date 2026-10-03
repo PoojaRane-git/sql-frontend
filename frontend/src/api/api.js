@@ -2,7 +2,7 @@ import axios from "axios";
 
 const BASE_URL = 
   (typeof process !== 'undefined' && process.env?.REACT_APP_API_URL) || 
-  "https://sql-neo4j-backend.onrender.com"; 
+  "https://sql-neo4j-backend.onrender.com" || "localhost:8080"; //
 
 console.log("Using API Base URL:", BASE_URL);
 

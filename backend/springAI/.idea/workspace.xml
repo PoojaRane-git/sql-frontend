@@ -4,7 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="44e3ec50-43b6-47ab-bdd7-c0c345da6cff" name="Changes" comment="" />
+    <list default="true" id="44e3ec50-43b6-47ab-bdd7-c0c345da6cff" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/example/springAI/controller/SQLController.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/example/springAI/controller/SQLController.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/example/springAI/service/PromptBuilder.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/example/springAI/service/PromptBuilder.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/example/springAI/service/SQLExecutionService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/example/springAI/service/SQLExecutionService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/example/springAI/util/JsonUtils.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/example/springAI/util/JsonUtils.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/application.yml" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/application.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../../frontend/src/api/api.js" beforeDir="false" afterPath="$PROJECT_DIR$/../../frontend/src/api/api.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../../frontend/src/pages/SQL/SQLPage.jsx" beforeDir="false" afterPath="$PROJECT_DIR$/../../frontend/src/pages/SQL/SQLPage.jsx" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />

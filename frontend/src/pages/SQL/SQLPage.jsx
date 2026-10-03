@@ -36,9 +36,19 @@ function StepIcon({ clause }) {
 
 
 // ANIMATED FILTER TABLE
-
-function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupColors, rowGroupColor, formatCell, runId }) {
+function FilterAnimationTable({
+  prevRows,
+  currRows,
+  stepColumns,
+  groups,
+  groupColors,
+  rowGroupColor,
+  formatCell,
+  runId,
+  clauseType = "current step"
+}) {
   const [visibleRows, setVisibleRows] = useState(prevRows.length > 0 ? prevRows : currRows);
+  const [selectedRow, setSelectedRow] = useState(null);
 
   useEffect(() => {
     setVisibleRows(prevRows.length > 0 ? prevRows : currRows);
@@ -61,6 +71,8 @@ function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupCo
               return (
                 <motion.tr
                   key={`${runId}-f-${row._rowKey || i}`}
+                  onClick={() => setSelectedRow({ row, removed: beingRemoved, clause: clauseType || "current step" })}
+                  style={{ cursor: "pointer", outline: selectedRow?.row?._rowKey === row._rowKey ? "2px solid #6366f1" : "none" }}
                   layout
                   initial={{ opacity: 0 }}
                   animate={{
@@ -80,6 +92,7 @@ function FilterAnimationTable({ prevRows, currRows, stepColumns, groups, groupCo
           </AnimatePresence>
         </tbody>
       </table>
+      {selectedRow && <div style={{ padding: 14, background: selectedRow.removed ? "#fff1f2" : "#eff6ff", borderTop: "1px solid #e2e8f0", color: "#334155", fontSize: 13 }}><strong>{selectedRow.removed ? "Filtered out at this stage" : "Row retained / transformed"}</strong><div style={{ marginTop: 5 }}>Operation: {selectedRow.clause}. {selectedRow.removed ? "This row is present in the prior snapshot but absent from this step's output." : "This row appears in the current backend-provided output snapshot."}</div><pre style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>{JSON.stringify(selectedRow.row, null, 2)}</pre></div>}
     </div>
   );
 }
@@ -95,6 +108,20 @@ export default function SQLPage() {
   const [runId, setRunId] = useState(0);
   const [activeStepTab, setActiveStepTab] = useState(0);
   const [isFocused, setIsFocused] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [selectedRow, setSelectedRow] = useState(null);
+
+  useEffect(() => {
+    if (!playing || steps.length === 0) return;
+    const timer = setInterval(() => {
+      setActiveStepTab((current) => {
+        if (current >= steps.length - 1) { setPlaying(false); return current; }
+        return current + 1;
+      });
+    }, 1800 / speed);
+    return () => clearInterval(timer);
+  }, [playing, speed, steps.length]);
 
   // FIX: Explicitly hits the axios instance using an explicit POST body mapping configuration
   const explainQuery = async () => {
@@ -143,6 +170,8 @@ const data = await api.sql.analyze(sql.trim());
     setSampleData({});
     setError("");
     setActiveStepTab(0);
+    setPlaying(false);
+    setSelectedRow(null);
     setRunId((id) => id + 1);
   }
   // Helpers
@@ -362,6 +391,16 @@ const data = await api.sql.analyze(sql.trim());
         <div style={styles.vizSection}>
           {steps.length > 0 ? (
             <>
+              <div style={{ ...styles.card, padding: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button style={styles.controlButton} onClick={() => { setPlaying(false); setActiveStepTab(0); }}>↺ Restart</button>
+                <button style={styles.controlButton} onClick={() => setActiveStepTab(i => Math.max(0, i - 1))} disabled={activeStepTab === 0}>← Previous</button>
+                <button style={{ ...styles.controlButton, background: "#6366f1", color: "white" }} onClick={() => setPlaying(v => !v)}>{playing ? "Ⅱ Pause" : "▶ Play"}</button>
+                <button style={styles.controlButton} onClick={() => setActiveStepTab(i => Math.min(steps.length - 1, i + 1))} disabled={activeStepTab === steps.length - 1}>Next →</button>
+                <label style={{ fontSize: 13, color: "#64748b" }}>Speed</label>
+                <select value={speed} onChange={e => setSpeed(Number(e.target.value))} style={{ padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select>
+                <span style={{ marginLeft: "auto", fontSize: 13, color: "#64748b" }}>Step {activeStepTab + 1} / {steps.length}</span>
+                <div style={{ width: "100%", height: 6, background: "#e2e8f0", borderRadius: 9, overflow: "hidden" }}><div style={{ width: `${((activeStepTab + 1) / steps.length) * 100}%`, height: "100%", background: "linear-gradient(90deg,#6366f1,#a855f7)", transition: "width .35s" }} /></div>
+              </div>
               <div style={styles.stepperContainer}>
                 {steps.map((step, idx) => (
                   <div
@@ -397,9 +436,13 @@ const data = await api.sql.analyze(sql.trim());
                     </div>
                   </div>
 
-                  <div style={styles.codeSnippet}>
-                    <code>{steps[activeStepTab].sql_fragment}</code>
+                  <div style={{ ...styles.codeSnippet, display: "flex", flexWrap: "wrap", gap: 7, lineHeight: 2.1 }}>
+                    {sql.split(/\b(FROM|JOIN|WHERE|GROUP\s+BY|HAVING|SELECT|DISTINCT|ORDER\s+BY|LIMIT|OFFSET|WITH)\b/gi).filter(Boolean).map((part, i) => {
+                      const active = part.trim().toUpperCase().replace(/\s+/g, " ") === String(steps[activeStepTab].clause || "").toUpperCase().replace(/\s+/g, " ").split(" ")[0];
+                      return <span key={i} style={{ padding: "1px 4px", borderRadius: 5, background: active ? "#4338ca" : "transparent", color: active ? "#fff" : "#cbd5e1", opacity: active ? 1 : 0.68 }}>{part}</span>;
+                    })}
                   </div>
+                  <div style={{ fontSize: 12, color: "#64748b", margin: "-15px 0 18px" }}>Clause focus follows the current execution step. Backend-provided step fragment: <code>{steps[activeStepTab].sql_fragment}</code></div>
 
                   <div style={styles.vizContent}>
                     {renderStepContent(steps[activeStepTab], steps[activeStepTab - 1])}
@@ -470,6 +513,7 @@ const styles = {
   primaryButton: { margin: "20px", padding: "14px", borderRadius: "12px", border: "none", backgroundColor: "#6366f1", color: "#fff", fontWeight: 700, fontSize: "14px", cursor: "pointer", transition: "transform 0.1s", boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)" },
   vizSection: { display: "flex", flexDirection: "column", gap: "24px" },
   stepperContainer: { display: "flex", gap: "10px", paddingBottom: "5px", overflowX: "auto" },
+  controlButton: { padding: "9px 13px", borderRadius: 9, border: "1px solid #cbd5e1", background: "#fff", color: "#334155", fontWeight: 700, cursor: "pointer" },
   stepTab: { padding: "12px 20px", borderRadius: "14px", border: "2px solid transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: "12px", transition: "all 0.2s" },
   stepTabNumber: { width: "22px", height: "22px", borderRadius: "50%", fontSize: "11px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800 },
   stepTabLabel: { fontSize: "14px", fontWeight: 700 },

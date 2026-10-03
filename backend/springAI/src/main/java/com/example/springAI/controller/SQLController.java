@@ -2,12 +2,15 @@ package com.example.springAI.controller;
 
 import com.example.springAI.service.SQLExecutionService;
 import com.example.springAI.util.JsonUtils;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
-import org.springframework.web.bind.annotation.*;
 
 import java.util.Collections;
-import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/api/sql")
@@ -22,52 +25,54 @@ public class SQLController {
 
     public record VisualizeRequest(String query) {
     }
+
+    public record ResponseNode(boolean success, JsonNode data, String error) {
+    }
+
     @PostMapping("/analyze")
     public ResponseNode visualize(@RequestBody VisualizeRequest request) {
-        String query = request.query();
-        System.out.println("query: " + query);
-
-
-        CompletableFuture<String> stepsFuture =
-                CompletableFuture.supplyAsync(() -> sqlExecutionService.analyzeSQL(query));
-
-        CompletableFuture<String> sampleDataFuture =
-                CompletableFuture.supplyAsync(() ->
-                        sqlExecutionService.generateSampleData(query, Collections.emptyMap()));
+        String query = request == null ? null : request.query();
+        if (query == null || query.isBlank()) {
+            return new ResponseNode(false, null, "Query is empty.");
+        }
 
         try {
-            CompletableFuture.allOf(stepsFuture, sampleDataFuture).join();
+            // 1) Steps first. On a CPU-only machine running both calls in parallel does not make
+            //    anything faster (they share the same cores), and if steps fail we skip sample data.
+            JsonNode stepsJson = JsonUtils.parse(sqlExecutionService.analyzeSQL(query));
 
-            String rawSteps = stepsFuture.get();
-            System.out.println("rawSteps: " + rawSteps);
-            String rawSampleData = sampleDataFuture.get();
+            // The prompt returns {"success": false, "error_code": ...} for invalid / unsupported SQL.
+            if (!stepsJson.path("success").asBoolean(false)) {
+                return explainFailure(query);
+            }
 
-            JsonNode stepsJson = JsonUtils.parse(rawSteps);
-            JsonNode sampleDataJson = JsonUtils.parse(rawSampleData);
+            // 2) Cheap Java-side repair/check instead of a second long LLM call.
+            ObjectNode steps = sqlExecutionService.repairAndCheckSteps(stepsJson, query);
 
-            // Optional but recommended: catch schema violations (like a missing
-            // SELECT step) before returning to the frontend. Costs one more
-            // STEPS_MODEL call; drop this if latency matters more than strictness.
-            String validatedRaw = sqlExecutionService.validateSteps(stepsJson.toString(), query);
-            JsonNode validatedSteps = JsonUtils.parse(validatedRaw);
+            // 3) Sample data.
+            JsonNode sampleDataJson = JsonUtils.parse(
+                    sqlExecutionService.generateSampleData(query, Collections.emptyMap()));
 
-            ObjectNode merged = JsonUtils.mergeStepsAndSampleData(validatedSteps, sampleDataJson);
-
+            ObjectNode merged = JsonUtils.mergeStepsAndSampleData(steps, sampleDataJson);
             return new ResponseNode(true, merged, null);
 
         } catch (Exception e) {
-            // Model output didn't parse as JSON, or a call failed outright.
-            // Fall back to the syntax-error explainer so the frontend still gets something actionable.
-            String explanation = sqlExecutionService.explainSyntaxError(query, e.getMessage());
-            try {
-                JsonNode errorJson = JsonUtils.parse(explanation);
-                return new ResponseNode(false, errorJson, "Failed to produce a valid visualization; see explanation.");
-            } catch (Exception parseFailure) {
-                return new ResponseNode(false, null, "Pipeline failed and error explanation also failed to parse: " + e.getMessage());
-            }
+            // Timeout, connection error, or model output that is not usable JSON.
+            // Do NOT call another LLM here: it would just be slow and probably fail the same way.
+            return new ResponseNode(false, null, "Pipeline failed: " + e.getMessage());
         }
     }
 
-    public record ResponseNode(boolean success, JsonNode data, String error) {
+    /** Only used when the steps model says the SQL itself is invalid / unsupported. */
+    private ResponseNode explainFailure(String query) {
+        try {
+            // No raw DB error exists here, so pass null (the prompt then analyzes the query text itself).
+            JsonNode explanation = JsonUtils.parse(sqlExecutionService.explainSyntaxError(query, null));
+            return new ResponseNode(false, explanation,
+                    "This query could not be visualized; see explanation.");
+        } catch (Exception e) {
+            return new ResponseNode(false, null,
+                    "Query could not be visualized and the explanation failed: " + e.getMessage());
+        }
     }
 }

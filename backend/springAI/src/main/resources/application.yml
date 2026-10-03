@@ -6,11 +6,17 @@ spring:
     ollama:
       base-url: http://localhost:11434
       chat:
-        model: "qwen2.5:7b"   # unused fallback, kept for completeness
+        options:
+          model: qwen2.5-coder:3b
+          temperature: 0
+          num-ctx: 4096
+          num-predict: 1024
+          num-thread: 6
+          keep-alive: 30m
 
 pipeline:
   models:
-    sql-conversion: "qwen2.5-coder:7b"
-    steps: "qwen2.5:7b"
-    sample-data: "qwen2.5:3b"
-    syntax-check: "qwen2.5-coder:1.5b"   # downgraded — lighter load
+    sql-conversion: "qwen2.5-coder:3b"   # switch to 7b only if this stage needs better quality
+    steps: "qwen2.5-coder:3b"
+    sample-data: "qwen2.5-coder:3b"
+    syntax-check: "qwen2.5-coder:3b"
